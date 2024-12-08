@@ -5,9 +5,10 @@ import struct
 import mmap
 import os
 from time import sleep
-from energy_count.ops_count import *
+from energy_sim.ops_count import *
 import networkx as nx
 # temporally
+
 countable_ops = {
                  "MmBackward": matrix_mul,
                  "BmmBackward0": batch_matrix_mul,
@@ -15,7 +16,7 @@ countable_ops = {
                  "CudnnConvolutionBackward": conv2d,
                  "MkldnnConvolutionBackward": conv2d,
                  "AddBackward0": tensor_add,
-                 "MulBackward0": matrix_dot,
+                 "MulBackward0": matrix_mul,
                  "SqrtBackward": tensor_pow,
                  "PowBackward0": tensor_pow,
                  "DivBackward0": matrix_dot,
@@ -36,11 +37,13 @@ shape_change_ops = {
     "AvgPool2DBackward": maxpool_2d,
     "SelectBackward": squeeze,
     "StackBackward": stack,
+    "PermuteBackward": permute,
 }
 
 status_change_ops = {
     "CudnnBatchNormBackward": norm,
     "atanBackward": atan,
+    "sigmoidBackward": atan
 }
 
 logger_file = "mac_ac.dat"
@@ -102,6 +105,10 @@ def parse_label(lbl_info):
                     attrs[last_key] = int(dim)
                     last_key = attr[rf+1:]
                 continue
+            elif last_key == "index":
+                attrs[last_key] = int(attr[0])
+                last_key = attr[1:]
+                continue
             elif last_key == "keepdim":
                 v = attr.find("True")
                 attrs[last_key] = attr[v:v+4]
@@ -146,6 +153,8 @@ def parse_label(lbl_info):
     except:
         print(f"parse exception at {lbl_info}")
         pass
+    # if fullname == "PermuteBackward":
+    #     print(attrs)
     return fullname,attrs
     pass
 
@@ -186,6 +195,8 @@ def single_forward(logger_q,graph_str,st,ops1,ops2,num,par_num,flock,lsar=1.0,is
         fullname,attrs = parse_label(lbl_info)
         # if "self_sizes" in attrs.keys() and fullname == "ViewBackward":
         #     ops2 = attrs['self_sizes']
+        if fullname == "SelectBackward":
+            ops2 = attrs['self_sizes']
         if "self_sizes" in attrs.keys() and ops2 is None:
             ops2 = attrs['self_sizes']
         if fullname in shape_change_ops.keys():
@@ -210,6 +221,9 @@ def single_forward(logger_q,graph_str,st,ops1,ops2,num,par_num,flock,lsar=1.0,is
             attrs['mac'] = is_mac
             logger_q.put([fullname,ops1,ops2])
             mac,ac,ops1,ops2 = count_fn(ops1,ops2,attrs)
+            # if fullname == "MulBackward0":
+            #     print(lsar)
+            lsar = 0.00025
             mac *= lsar
             ac *= lsar
             logger_q.put([0, mac, ac])

@@ -260,6 +260,14 @@ def stack(ops,attrs):
     pass
 
 
+def permute(ops,attrs):
+    dim = attrs['dims']
+    new_ops = [0] * len(ops)
+    for i in range(len(ops)):
+        new_ops[i] = ops[dim[i]]
+    return new_ops
+
+
 def maxpool_2d(ops,attrs):
     kn1,kn2 = attrs['kernel_size']
     padding1,padding2 = attrs['padding']
@@ -343,7 +351,7 @@ def asynchronous_logger(q):
     energy = (mac * E_mac + ac * E_ac) * 1e-6
     print(f"\n simulated total energy consumption(μJ):{energy}\n")
     fh.close()
-    os.remove(logger_file)
+    # os.remove(logger_file)
     pass
 
 
