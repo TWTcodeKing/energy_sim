@@ -8,7 +8,6 @@ from time import sleep
 from energy_sim.ops_count import *
 import networkx as nx
 # temporally
-
 countable_ops = {
                  "MmBackward": matrix_mul,
                  "BmmBackward0": batch_matrix_mul,
@@ -16,7 +15,7 @@ countable_ops = {
                  "CudnnConvolutionBackward": conv2d,
                  "MkldnnConvolutionBackward": conv2d,
                  "AddBackward0": tensor_add,
-                 "MulBackward0": matrix_mul,
+                 "MulBackward0": matrix_dot,
                  "SqrtBackward": tensor_pow,
                  "PowBackward0": tensor_pow,
                  "DivBackward0": matrix_dot,
@@ -37,13 +36,11 @@ shape_change_ops = {
     "AvgPool2DBackward": maxpool_2d,
     "SelectBackward": squeeze,
     "StackBackward": stack,
-    "PermuteBackward": permute,
 }
 
 status_change_ops = {
     "CudnnBatchNormBackward": norm,
     "atanBackward": atan,
-    "sigmoidBackward": atan
 }
 
 logger_file = "mac_ac.dat"
@@ -52,17 +49,17 @@ len_nid = 13
 module_lsar_dict = {}
 
 
-def lsar_register(net):
+def lsar_register(net,unstructured_pruning=False):
     m_dict = dict(net.named_modules())
     for key in m_dict.keys():
         if key == "":
             continue
         m = m_dict[key]
-        m.register_forward_hook(ops_hook_fn(key+".weight"))
+        m.register_forward_hook(ops_hook_fn(key+".weight",unstructured_pruning))
 
 
 # this function is especially prepared for lasr and ac attr
-def ops_hook_fn(module_name):
+def ops_hook_fn(module_name,unstructured_pruning):
     def hook(m,inputs,outputs):
         import torch
         inputs = inputs[0]
@@ -74,6 +71,8 @@ def ops_hook_fn(module_name):
             lsar += len(torch.where(inputs == float(i))[0]) / inputs.numel() * i
         if lsar == 0:
             lsar = inputs.count_nonzero() / inputs.numel()
+        if unstructured_pruning and isinstance(m,torch.nn.Conv2d):
+            pass
         module_lsar_dict[module_name] = [float(lsar),is_mac]
     return hook
 
@@ -104,10 +103,6 @@ def parse_label(lbl_info):
                     dim = attr[lf+1:rf].replace(",","")
                     attrs[last_key] = int(dim)
                     last_key = attr[rf+1:]
-                continue
-            elif last_key == "index":
-                attrs[last_key] = int(attr[0])
-                last_key = attr[1:]
                 continue
             elif last_key == "keepdim":
                 v = attr.find("True")
@@ -153,8 +148,6 @@ def parse_label(lbl_info):
     except:
         print(f"parse exception at {lbl_info}")
         pass
-    # if fullname == "PermuteBackward":
-    #     print(attrs)
     return fullname,attrs
     pass
 
@@ -195,16 +188,17 @@ def single_forward(logger_q,graph_str,st,ops1,ops2,num,par_num,flock,lsar=1.0,is
         fullname,attrs = parse_label(lbl_info)
         # if "self_sizes" in attrs.keys() and fullname == "ViewBackward":
         #     ops2 = attrs['self_sizes']
-        if fullname == "SelectBackward":
-            ops2 = attrs['self_sizes']
         if "self_sizes" in attrs.keys() and ops2 is None:
             ops2 = attrs['self_sizes']
         if fullname in shape_change_ops.keys():
-            ops1 = None
+            # bops1 = None
             sc_fn = shape_change_ops[fullname]
             attrs['num_par_edges'] = graph_raw.in_degree(st)
             try:
-                ops2 = sc_fn(ops2,attrs)
+                if ops1 is not None:
+                    ops1 = sc_fn(ops1,attrs)
+                else:
+                    ops2 = sc_fn(ops2,attrs)
             except:
                 pass
                 # ViewBackward would give it
@@ -221,9 +215,6 @@ def single_forward(logger_q,graph_str,st,ops1,ops2,num,par_num,flock,lsar=1.0,is
             attrs['mac'] = is_mac
             logger_q.put([fullname,ops1,ops2])
             mac,ac,ops1,ops2 = count_fn(ops1,ops2,attrs)
-            # if fullname == "MulBackward0":
-            #     print(lsar)
-            lsar = 0.00025
             mac *= lsar
             ac *= lsar
             logger_q.put([0, mac, ac])
@@ -281,6 +272,7 @@ def single_forward(logger_q,graph_str,st,ops1,ops2,num,par_num,flock,lsar=1.0,is
             # ops2 = attrs['self_sizes']
             ops2[dim] //= len(chl_edges)
         elif fullname in countable_ops.keys():
+
             count_fn = countable_ops[fullname]
             if "Conv" in fullname:
                 ops1.append(attrs['stride'])
